@@ -1,6 +1,7 @@
 .venv/
 build/
-dist/
+dist/*
+!dist/ExcelTimeCalculator.exe
 __pycache__/
 *.pyc
 *.spec
