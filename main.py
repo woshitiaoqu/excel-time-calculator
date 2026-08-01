@@ -103,7 +103,8 @@ class App:
                 "没有解析到任何时长，请检查输入内容。\n"
                 "支持格式：3:40 / 3:00 / 90（秒）")
             return
-        msg = "\n".join(calc.build_result_lines(total, parsed, skipped))
+        detail = "\n".join(calc.build_detail_lines(values))
+        msg = detail + "\n\n" + "\n".join(calc.build_result_lines(total, parsed, skipped))
         messagebox.showinfo("统计结果", msg)
         self.var_status.set("已统计 %d 条粘贴数据" % parsed)
 

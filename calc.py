@@ -27,6 +27,19 @@ def _fmt_hours(hours):
     return s if s else "0"
 
 
+def build_detail_lines(values):
+    """为粘贴的每行数据生成带序号的结果行，解析失败的标为已跳过。"""
+    rows = []
+    for i, (v, time_cell) in enumerate(values, 1):
+        sec = parse_seconds(v, time_cell)
+        text = str(v).strip() if v is not None else ""
+        if sec is None:
+            rows.append("%d. %s   [已跳过：无法解析]" % (i, text))
+        else:
+            rows.append("%d. %s   = %d 秒" % (i, text, sec))
+    return rows
+
+
 def build_result_lines(total, parsed, skipped):
     hours = total / 3600.0
     minutes = total / 60.0
