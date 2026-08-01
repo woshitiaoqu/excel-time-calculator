@@ -50,6 +50,7 @@ class LineNumberText(tk.Frame):
 
     def _wheel(self, event):
         self.text.yview_scroll(int(-event.delta / 120), "units")
+        self._redraw()
         return "break"
 
     def _scroll_bar(self, *args):
@@ -58,6 +59,7 @@ class LineNumberText(tk.Frame):
 
     def _scroll_text(self, *args):
         self.text.yview(*args)
+        self._redraw()
 
     def _on_modified(self, event):
         if self.text.edit_modified():
