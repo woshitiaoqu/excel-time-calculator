@@ -5,7 +5,7 @@ import os
 import re
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox
 
 import calc
 import reader
@@ -25,6 +25,57 @@ def _extract_paths(data):
         else:
             paths.append(m.group(0).strip())
     return [p for p in paths if p]
+
+
+class LineNumberText(tk.Frame):
+    """带 Excel 式行号的文本框。"""
+
+    def __init__(self, parent, **kw):
+        tk.Frame.__init__(self, parent)
+        self.ln = tk.Canvas(self, width=42, highlightthickness=0,
+                            bd=0, bg="#f2f2f2")
+        self.vsb = tk.Scrollbar(self, orient=tk.VERTICAL,
+                                command=self._scroll_text)
+        self.text = tk.Text(self, yscrollcommand=self._scroll_bar, **kw)
+        self.ln.pack(side=tk.LEFT, fill=tk.Y)
+        self.text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.text.bind("<KeyRelease>", lambda e: self._redraw())
+        self.text.bind("<Configure>", lambda e: self._redraw())
+        self.text.bind("<<Modified>>", self._on_modified)
+        self.text.bind("<MouseWheel>", self._wheel)
+        self.ln.bind("<MouseWheel>", self._wheel)
+        self._redraw()
+
+    def _wheel(self, event):
+        self.text.yview_scroll(int(-event.delta / 120), "units")
+        return "break"
+
+    def _scroll_bar(self, *args):
+        self.vsb.set(*args)
+        self.ln.yview_moveto(args[0])
+
+    def _scroll_text(self, *args):
+        self.text.yview(*args)
+
+    def _on_modified(self, event):
+        if self.text.edit_modified():
+            self._redraw()
+
+    def _redraw(self):
+        self.text.edit_modified(False)
+        self.ln.delete("all")
+        i = self.text.index("@0,0")
+        while True:
+            dline = self.text.dlineinfo(i)
+            if dline is None:
+                break
+            y = dline[1]
+            n = int(str(i).split(".")[0])
+            self.ln.create_text(36, y, anchor="ne", text=n,
+                                font=self.text.cget("font"), fill="#999")
+            i = self.text.index("%s+1line" % i)
 
 
 class App:
@@ -62,10 +113,10 @@ class App:
                  text="── 或直接粘贴时长数据（每行一条，如 3:40 / 90）──",
                  font=("Microsoft YaHei", 9), fg="#999").pack(pady=(10, 4))
 
-        self.txt_input = scrolledtext.ScrolledText(
-            self.root, height=6, font=("Consolas", 11),
-            wrap=tk.WORD, relief=tk.GROOVE, bd=1)
-        self.txt_input.pack(fill=tk.BOTH, expand=True, padx=16)
+        inp = LineNumberText(self.root, height=6, font=("Consolas", 11),
+                             wrap=tk.WORD, relief=tk.GROOVE, bd=1)
+        inp.pack(fill=tk.BOTH, expand=True, padx=16)
+        self.txt_input = inp.text
 
         tk.Button(self.root, text="统计粘贴的时长", width=18,
                   command=self.process_text).pack(pady=8)
@@ -103,8 +154,7 @@ class App:
                 "没有解析到任何时长，请检查输入内容。\n"
                 "支持格式：3:40 / 3:00 / 90（秒）")
             return
-        detail = "\n".join(calc.build_detail_lines(values))
-        msg = detail + "\n\n" + "\n".join(calc.build_result_lines(total, parsed, skipped))
+        msg = "\n".join(calc.build_result_lines(total, parsed, skipped))
         messagebox.showinfo("统计结果", msg)
         self.var_status.set("已统计 %d 条粘贴数据" % parsed)
 
