@@ -264,90 +264,111 @@ class App:
             self.var_status.set("获取失败")
             return
 
-        parts = ["在线文档：%s" % url, ""]
-        valid = 0
+        # 1) 智能检测每个工作簿有哪些列有数据
+        sheets_info = []
+        all_cols = set()
         for wb in result:
             name = wb["name"]
             columns = wb.get("columns", {})
-            # 智能检测有数据的列（排除解析不出时长的列）
-            usable = []
+            usable_cols = []
             for col in sorted(columns):
                 vals = columns[col]
                 total, parsed, _ = calc.total_from_values(
                     [(c, False) for c in vals])
                 if parsed > 0:
-                    usable.append((col, vals, total, parsed))
-            if not usable:
-                parts.append("──── %s ────" % name)
-                parts.append("  没有解析到任何时长")
-                parts.append("")
-                continue
+                    usable_cols.append(col)
+                    all_cols.add(col)
+            sheets_info.append({
+                "name": name,
+                "columns": columns,
+                "usable_cols": usable_cols,
+            })
 
-            if len(usable) == 1:
-                col, vals, total, parsed = usable[0]
-                parts.append("──── %s ────" % name)
-                for line in calc.build_result_lines(total, parsed,
-                                                     len(vals) - parsed):
-                    parts.append("  " + line)
-                parts.append("")
-                valid += 1
-            else:
-                # 多列有数据：弹出选择框，智能列出有数据的列
-                pick = self._choose_column(name, usable)
-                if pick is None:
-                    parts.append("──── %s ────" % name)
-                    parts.append("  已取消选择列")
-                    parts.append("")
-                    continue
-                col, vals, total, parsed = pick
-                parts.append("──── %s（%s 列）────" % (name, col))
-                for line in calc.build_result_lines(total, parsed,
-                                                     len(vals) - parsed):
-                    parts.append("  " + line)
-                parts.append("")
-                valid += 1
-
-        if valid == 0:
+        # 2) 弹出工作簿多选框（只列有可用数据的）
+        selectable = [s for s in sheets_info if s["usable_cols"]]
+        if not selectable:
             messagebox.showwarning(
                 "没有有效数据",
                 "所有工作簿都没有解析到任何时长，请检查文档内容。")
             return
+        picked_sheets = self._choose_sheets(selectable)
+        if picked_sheets is None:
+            self.var_status.set("已取消")
+            return
+
+        # 3) 弹出列选择框（统一固定选一列，只列有数据的列）
+        usable_cols = sorted(all_cols)
+        pick_col = self._choose_column(usable_cols)
+        if pick_col is None:
+            self.var_status.set("已取消")
+            return
+
+        # 4) 对每个选中的工作簿，统计选中的那一列
+        parts = ["在线文档：%s" % url, ""]
+        valid = 0
+        for name in picked_sheets:
+            info = next(s for s in sheets_info if s["name"] == name)
+            cols = info["columns"]
+            vals = cols.get(pick_col, [])
+            total, parsed, skipped = calc.total_from_values(
+                [(c, False) for c in vals])
+            parts.append("──── %s（%s 列）────" % (name, pick_col))
+            if parsed == 0:
+                parts.append("  该工作簿的 %s 列没有时长数据" % pick_col)
+                parts.append("")
+                continue
+            for line in calc.build_result_lines(total, parsed, skipped):
+                parts.append("  " + line)
+            parts.append("")
+            valid += 1
+
+        if valid == 0:
+            messagebox.showwarning(
+                "没有有效数据",
+                "所选工作簿的 %s 列都没有解析到任何时长，请检查文档内容。"
+                % pick_col)
+            return
 
         messagebox.showinfo("统计结果", "\n".join(parts))
-        self.var_status.set("已统计在线文档全部工作簿")
+        self.var_status.set("已统计 %d 个工作簿的 %s 列" % (valid, pick_col))
 
-    def _choose_column(self, sheet_name, usable):
-        """智能弹出列选择框，只列出有数据的列。
+    def _choose_sheets(self, sheets_info):
+        """弹出工作簿多选框，可勾选多个工作簿。
 
-        usable: [(col, vals, total, parsed), ...]
-        返回选中的 (col, vals, total, parsed) 或 None（取消）。
+        sheets_info: [{"name":..., "columns":..., "usable_cols":[...]}, ...]
+        返回选中的工作簿名列表，或 None（取消）。
         """
         top = tk.Toplevel(self.root)
-        top.title("选择统计列")
+        top.title("选择工作簿")
         top.transient(self.root)
         top.grab_set()
         top.resizable(False, False)
 
         tk.Label(top,
-                 text="工作簿「%s」有多个列含时长数据，请选择要统计的列："
-                      % sheet_name,
+                 text="该文档有多个工作簿，请勾选要统计的工作簿（可多选）：",
                  font=("Microsoft YaHei", 9)).pack(padx=12, pady=(12, 4))
 
-        frame = tk.Frame(top)
-        frame.pack(padx=12, pady=4)
-        labels = []
-        for col, vals, total, parsed in usable:
-            labels.append("列 %s（%d 条时长）" % (col, parsed))
-
-        var = tk.StringVar(value=labels[0])
-        om = tk.OptionMenu(frame, var, *labels)
-        om.config(width=24)
-        om.pack()
+        box = tk.Frame(top)
+        box.pack(padx=12, pady=4)
+        vars_map = {}
+        for info in sheets_info:
+            name = info["name"]
+            cols_desc = ", ".join(info["usable_cols"]) if info["usable_cols"] else "无"
+            var = tk.BooleanVar(value=True)
+            vars_map[name] = var
+            cb = tk.Checkbutton(
+                box, text="工作簿 %s（列：%s）" % (name, cols_desc),
+                font=("Microsoft YaHei", 9), variable=var, anchor="w")
+            cb.pack(fill=tk.X, padx=8, pady=2)
 
         result = {}
 
         def ok():
-            result["idx"] = labels.index(var.get())
+            picked = [n for n, v in vars_map.items() if v.get()]
+            if not picked:
+                messagebox.showinfo("提示", "请至少勾选一个工作簿。")
+                return
+            result["names"] = picked
             top.destroy()
 
         def cancel():
@@ -360,9 +381,52 @@ class App:
 
         self._center(top)
         top.wait_window()
-        if "idx" not in result:
+        return result.get("names")
+
+    def _choose_column(self, usable_cols):
+        """弹出列选择框，只列出有数据的列（统一固定选一列）。
+
+        usable_cols: [col, ...] 有数据的列名列表。
+        返回选中的列名，或 None（取消）。
+        """
+        if not usable_cols:
             return None
-        return usable[result["idx"]]
+        top = tk.Toplevel(self.root)
+        top.title("选择统计列")
+        top.transient(self.root)
+        top.grab_set()
+        top.resizable(False, False)
+
+        tk.Label(top,
+                 text="请选择要统计的列（将统计所有选中工作簿的该列）：",
+                 font=("Microsoft YaHei", 9)).pack(padx=12, pady=(12, 4))
+
+        frame = tk.Frame(top)
+        frame.pack(padx=12, pady=4)
+        labels = ["列 %s" % col for col in usable_cols]
+
+        var = tk.StringVar(value=labels[0])
+        om = tk.OptionMenu(frame, var, *labels)
+        om.config(width=24)
+        om.pack()
+
+        result = {}
+
+        def ok():
+            result["col"] = usable_cols[labels.index(var.get())]
+            top.destroy()
+
+        def cancel():
+            top.destroy()
+
+        btn = tk.Frame(top)
+        btn.pack(pady=8)
+        tk.Button(btn, text="确定", width=8, command=ok).pack(side=tk.LEFT, padx=6)
+        tk.Button(btn, text="取消", width=8, command=cancel).pack(side=tk.LEFT, padx=6)
+
+        self._center(top)
+        top.wait_window()
+        return result.get("col")
 
     def _disable_buttons(self, disabled):
         for w in self.root.winfo_children():
