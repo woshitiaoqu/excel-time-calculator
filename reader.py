@@ -132,11 +132,17 @@ def _parse_time_text(s):
 
     支持：2:27 / 2：27 / 2.27 / 2．27 / 2,27 / 2分27秒 / 2m27s / 2'27"
     也支持三段的 时:分:秒 作为兜底（无小时场景一般不出现）。
+    纯秒写法：120 / 120s / 120秒
     """
+    # 纯秒数 + 单位：120s / 120秒 / 120 S / 120 秒
+    m = re.match(r"^\s*(\d+)\s*[s秒]\s*$", s, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+
     # 文字写法：2分27秒 / 2m27s / 2'27"，必须含标记字符才按此解析
     #（否则纯整数 90 会被误拆成 9分0秒）
-    if re.search(r"[分秒ms\u2032\u2033'\"`]", s):
-        m = re.match(r"^(\d+)\s*[分m\u2032'\u0060]?\s*(\d{1,2})\s*[秒s\u2033\"]?$", s)
+    if re.search(r"[分秒m\u2032\u2033'\"`]", s):
+        m = re.match(r"^(\d+)\s*[分m\u2032'\u0060]\s*(\d{1,2})\s*[秒s\u2033\"]?$", s)
         if m:
             minutes, seconds = int(m.group(1)), int(m.group(2))
             if seconds < 60:
