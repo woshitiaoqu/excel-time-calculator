@@ -127,12 +127,21 @@ def _normalize_symbols(s):
     return s.translate(_FULLWIDTH)
 
 
-def _parse_time_text(s):
-    """把多种写法的 分:秒 文本解析成秒；解析不了返回 None。
+class _TimeInvalid(object):
+    """哨兵：识别为时间格式但非法（如秒数 >=60）。"""
+    pass
 
-    支持：2:27 / 2：27 / 2.27 / 2．27 / 2,27 / 2分27秒 / 2m27s / 2'27"
-    也支持三段的 时:分:秒 作为兜底（无小时场景一般不出现）。
-    纯秒写法：120 / 120s / 120秒
+
+_TIME_INVALID = _TimeInvalid()
+
+
+def _parse_time_text(s):
+    """把多种写法的 分:秒 文本解析成秒。
+
+    返回：
+      - 秒数（int）：解析成功
+      - None：不是时间格式（可尝试纯数字解析）
+      - _TIME_INVALID：是时间格式但非法（如秒数 >=60），应判整行无效
     """
     # 纯秒数 + 单位：120s / 120秒 / 120 S / 120 秒
     m = re.match(r"^\s*(\d+)\s*[s秒]\s*$", s, re.IGNORECASE)
@@ -147,10 +156,16 @@ def _parse_time_text(s):
             minutes, seconds = int(m.group(1)), int(m.group(2))
             if seconds < 60:
                 return minutes * 60 + seconds
+            return _TIME_INVALID
 
     # 数字分隔写法：2:27 / 2.27 / 2,27
     parts = re.split(r"[:：.．,，]", s)
     if len(parts) >= 2:
+        # 用 . 或 ，分隔的多段（如 1.2.3 / 12,34,56）属于奇怪数据，
+        # 分.秒最多 2 段，只有 : 分隔才允许 3 段（时:分:秒）
+        dot_parts = re.split(r"[.．,，]", s)
+        if len(dot_parts) > 2 and ":" not in s and "：" not in s:
+            return _TIME_INVALID
         try:
             nums = [int(float(p)) for p in parts]
         except ValueError:
@@ -159,12 +174,12 @@ def _parse_time_text(s):
             m, sec = nums
             if sec < 60:
                 return m * 60 + sec
-            return None
+            return _TIME_INVALID
         if len(nums) == 3:
             h, m, sec = nums
             if sec < 60 and m < 60:
                 return h * 3600 + m * 60 + sec
-            return None
+            return _TIME_INVALID
     return None
 
 
@@ -188,6 +203,8 @@ def parse_seconds(value, time_cell=False):
         # 小数按 分.秒 解释（如 0.27 = 0分27秒 = 27 秒）
         sec = _parse_time_text(str(value))
         if sec is not None:
+            if sec is _TIME_INVALID:
+                return None
             return sec
         return int(round(value))
 
@@ -195,13 +212,21 @@ def parse_seconds(value, time_cell=False):
         s = _normalize_symbols(value).strip()
         if not s:
             return None
+        # 过滤负数、科学计数法等奇怪符号
+        if re.match(r"^-", s) or re.search(r"[eE]", s):
+            return None
         sec = _parse_time_text(s)
         if sec is not None:
+            if sec is _TIME_INVALID:
+                return None
             return sec
-        try:
-            return int(round(float(s)))  # 纯数字按秒
-        except ValueError:
-            return None
+        # 纯数字按秒（只允许纯整数或纯小数，不带奇怪后缀）
+        if re.match(r"^\d+(\.\d+)?$", s):
+            try:
+                return int(round(float(s)))
+            except ValueError:
+                return None
+        return None
 
     return None
 
