@@ -123,6 +123,8 @@ class App:
         self.om_import.config(width=24)
         self.om_import.pack(side=tk.LEFT, padx=4)
         tk.Button(row, text="打开", width=5, command=self.open_import).pack(side=tk.LEFT)
+        tk.Button(row, text="✕", width=2, fg="#c00", relief=tk.FLAT,
+                  command=self.remove_import).pack(side=tk.LEFT, padx=(6, 0))
 
         self.imported = []
         self.import_labels = {}
@@ -244,11 +246,32 @@ class App:
             label = "%s (%d)" % (base, i)
             i += 1
         self.import_labels[label] = path
+        self._refresh_import_menu()
+        self.var_import.set(label)
+
+    def _refresh_import_menu(self):
         menu = self.om_import["menu"]
         menu.delete(0, tk.END)
+        if not self.import_labels:
+            self.var_import.set("")
+            return
         for lb in self.import_labels:
             menu.add_command(label=lb, command=lambda v=lb: self.var_import.set(v))
-        self.var_import.set(label)
+
+    def remove_import(self):
+        label = self.var_import.get()
+        if not label or label not in self.import_labels:
+            messagebox.showinfo("提示", "请先选择一个要移除的文件。")
+            return
+        if not messagebox.askyesno("确认移除",
+                                   "确定从列表移除「%s」吗？" % label):
+            return
+        del self.import_labels[label]
+        self.imported = list(self.import_labels.values())
+        self._refresh_import_menu()
+        if self.import_labels:
+            self.var_import.set(next(iter(self.import_labels)))
+        self.var_status.set("已移除：%s" % label)
 
     def open_import(self):
         path = self.import_labels.get(self.var_import.get())
