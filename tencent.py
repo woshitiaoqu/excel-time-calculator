@@ -457,14 +457,14 @@ def _pick_profile_for_url(url):
 
 def fetch_workbook_with_browser(url, wait_sheet_ready=60, wait_after_click=4,
                                 progress=None):
-    """用系统无头浏览器打开在线文档，返回所有工作簿的完整 A 列数据。
+    """用系统无头浏览器打开在线文档，返回所有工作簿的所有列数据。
 
-    自动：
+    自动识别平台（腾讯文档 / WPS 金山文档）并选择对应的读取方式：
     1. 检测系统浏览器（Chrome/Edge/Firefox）路径与版本，自动匹配 driver
-    2. 检测浏览器是否已登录目标站点（腾讯文档/WPS），复用登录态免登录
-    3. 打开文档 → 依次点击每个工作表标签 → 读取全部单元格
+    2. 检测浏览器是否已登录目标站点，复用登录态免登录
+    3. 打开文档 → 遍历每个工作表 → 读取全部列单元格
 
-    返回 [{"name": ..., "values": [...]}, ...]。
+    返回 [{"name": ..., "columns": {...}}, ...]。
     progress 回调：progress(msg)，用于 UI 显示"正在获取数据中"。
     """
     if progress:
@@ -483,6 +483,9 @@ def fetch_workbook_with_browser(url, wait_sheet_ready=60, wait_after_click=4,
         driver.set_page_load_timeout(60)
         driver.get(url)
         time.sleep(5)
+
+        if is_wps_url(url):
+            return _fetch_wps(driver, wait_sheet_ready, progress)
 
         if progress:
             progress("正在等待文档加载完成…")
@@ -520,3 +523,156 @@ def fetch_workbook_with_browser(url, wait_sheet_ready=60, wait_after_click=4,
         return result
     finally:
         driver.quit()
+
+
+def is_wps_url(url):
+    return ("kdocs.cn" in url or "wps.cn" in url or "kingsoft" in url)
+
+
+# ---------------------------------------------------------------------------
+# WPS 读取逻辑（使用 WPSOpenApi）
+# ---------------------------------------------------------------------------
+
+_WPS_GET_SHEETS_JS = """
+var els = document.querySelectorAll('.sheet-name');
+var names = [];
+for (var i = 0; i < els.length; i++) {
+  var t = (els[i].textContent || '').trim();
+  if (t) names.push(t);
+}
+return JSON.stringify(names);
+"""
+
+_WPS_ACTIVATE_JS = """
+var idx = arguments[0];
+var cb = arguments[arguments.length - 1];
+var app = window.WPSOpenApi.Application;
+try {
+  var sh = app.Sheets.Item(idx);
+  var p = sh.Activate();
+  function done(){ cb(JSON.stringify({ok: true})); }
+  if (p && p.then) p.then(done, function(e){ cb(JSON.stringify({err: String(e)})); });
+  else done();
+} catch(e) { cb(JSON.stringify({err: e.message})); }
+"""
+
+_WPS_READ_COL_JS = """
+var letter = arguments[0];
+var cb = arguments[arguments.length - 1];
+var app = window.WPSOpenApi.Application;
+var vals = [];
+var row = 1;
+var MAX_ROW = 500;
+var dead = false;
+function finish() { if (!dead) { dead = true; cb(JSON.stringify(vals)); } }
+function readNext() {
+  if (dead || row > MAX_ROW) { finish(); return; }
+  var cell, t;
+  try { cell = app.Range(letter + row); } catch(e) { finish(); return; }
+  try { t = cell.Text; } catch(e) { finish(); return; }
+  // 每个 promise 加 3 秒兜底，避免卡死
+  var guard = setTimeout(function(){ finish(); }, 3000);
+  function got(v) {
+    clearTimeout(guard);
+    if (dead) return;
+    var s = v === undefined || v === null ? '' : String(v);
+    if (s.indexOf('function') === 0) { finish(); return; }
+    if (s === '') {
+      if (vals.length && row > 2) { finish(); return; }
+      row++; readNext(); return;
+    }
+    vals.push(s);
+    row++; readNext();
+  }
+  function onErr() { clearTimeout(guard); finish(); }
+  if (t && t.then) { t.then(got, onErr); }
+  else { got(t); }
+}
+readNext();
+"""
+
+_WPS_GET_COLUMNS_JS = """
+var cb = arguments[arguments.length - 1];
+var app = window.WPSOpenApi.Application;
+var cols = {};
+var MAX_COL = 26;
+var MAX_ROW = 500;
+var c = 0;
+function nextCol() {
+  if (c >= MAX_COL) { cb(JSON.stringify(cols)); return; }
+  var letter = String.fromCharCode(65 + c);
+  var vals = [];
+  var row = 1;
+  function readRow() {
+    if (row > MAX_ROW) { if (vals.length) cols[letter] = vals; c++; nextCol(); return; }
+    var cell, t;
+    try { cell = app.Range(letter + row); } catch(e) { if (vals.length) cols[letter] = vals; c++; nextCol(); return; }
+    try { t = cell.Text; } catch(e) { if (vals.length) cols[letter] = vals; c++; nextCol(); return; }
+    function got(v) {
+      var s = v === undefined || v === null ? '' : String(v);
+      if (s.indexOf('function') === 0) { if (vals.length) cols[letter] = vals; c++; nextCol(); return; }
+      if (s === '') {
+        if (vals.length && row > 2) { if (vals.length) cols[letter] = vals; c++; nextCol(); return; }
+        row++; readRow(); return;
+      }
+      vals.push(s);
+      row++; readRow();
+    }
+    if (t && t.then) { t.then(got, function(){ if (vals.length) cols[letter] = vals; c++; nextCol(); }); }
+    else { got(t); }
+  }
+  readRow();
+}
+nextCol();
+"""
+
+
+def _fetch_wps(driver, wait_sheet_ready, progress):
+    """读取 WPS 文档：遍历所有工作表，读取所有列。"""
+    if progress:
+        progress("正在等待 WPS 文档加载完成…")
+
+    ready = False
+    for _ in range(wait_sheet_ready):
+        try:
+            r = driver.execute_script(
+                "return !!(window.WPSOpenApi && "
+                "window.WPSOpenApi.Application)")
+            if r:
+                ready = True
+                break
+        except Exception:
+            pass
+        time.sleep(1)
+    if not ready:
+        raise RuntimeError("WPS 文档加载超时，请检查链接是否可访问")
+
+    time.sleep(3)  # 等 API 完全就绪
+
+    names = json.loads(driver.execute_script(_WPS_GET_SHEETS_JS))
+    if not names:
+        raise RuntimeError("未能识别 WPS 文档的工作表")
+    if progress:
+        progress("共找到 %d 个工作簿，正在读取数据…" % len(names))
+
+    result = []
+    for idx, name in enumerate(names, 1):
+        if idx > 1:
+            driver.execute_async_script(_WPS_ACTIVATE_JS, idx)
+            time.sleep(2)
+        columns = {}
+        for c in range(26):
+            letter = chr(65 + c)
+            raw = driver.execute_async_script(_WPS_READ_COL_JS, letter)
+            vals = json.loads(raw)
+            if not vals:
+                if c > 0:
+                    break  # 空列后不再继续
+                continue
+            columns[letter] = vals
+        result.append({"name": name, "columns": columns})
+        total = sum(len(v) for v in columns.values())
+        if progress:
+            progress("工作簿「%s」已读取 %d 列 %d 条" % (
+                name, len(columns), total))
+    return result
