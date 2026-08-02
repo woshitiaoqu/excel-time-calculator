@@ -416,7 +416,6 @@ class App:
 
         # 1) 智能检测每个工作簿有哪些列有数据
         sheets_info = []
-        all_cols = set()
         for wb in result:
             name = wb["name"]
             columns = wb.get("columns", {})
@@ -427,7 +426,6 @@ class App:
                     [(c, False) for c in vals])
                 if parsed > 0:
                     usable_cols.append(col)
-                    all_cols.add(col)
             sheets_info.append({
                 "name": name,
                 "columns": columns,
@@ -446,41 +444,50 @@ class App:
             self.var_status.set("已取消")
             return
 
-        # 3) 弹出列选择框（统一固定选一列，只列有数据的列）
-        usable_cols = sorted(all_cols)
-        pick_col = self._choose_column(usable_cols)
-        if pick_col is None:
-            self.var_status.set("已取消")
-            return
+        # 3) 对每个选中的工作簿，分别弹出列选择框（可多选，只列该表有数据的列）
+        picks = {}  # name -> [col, ...]
+        for name in picked_sheets:
+            info = next(s for s in sheets_info if s["name"] == name)
+            if not info["usable_cols"]:
+                picks[name] = []
+                continue
+            cols = self._choose_columns(name, info["usable_cols"])
+            if cols is None:
+                self.var_status.set("已取消")
+                return
+            picks[name] = cols
 
-        # 4) 对每个选中的工作簿，统计选中的那一列
+        # 4) 分工作簿、分列统计
         parts = ["在线文档：%s" % url, ""]
         valid = 0
         for name in picked_sheets:
             info = next(s for s in sheets_info if s["name"] == name)
-            cols = info["columns"]
-            vals = cols.get(pick_col, [])
-            total, parsed, skipped = calc.total_from_values(
-                [(c, False) for c in vals])
-            parts.append("──── %s（%s 列）────" % (name, pick_col))
-            if parsed == 0:
-                parts.append("  该工作簿的 %s 列没有时长数据" % pick_col)
+            parts.append("──── %s ────" % name)
+            for col in picks.get(name, []):
+                vals = info["columns"].get(col, [])
+                total, parsed, skipped = calc.total_from_values(
+                    [(c, False) for c in vals])
+                if parsed == 0:
+                    parts.append("  %s 列：没有时长数据" % col)
+                    continue
+                parts.append("  %s 列：" % col)
+                for line in calc.build_result_lines(total, parsed, skipped):
+                    parts.append("    " + line)
                 parts.append("")
-                continue
-            for line in calc.build_result_lines(total, parsed, skipped):
-                parts.append("  " + line)
+                valid += 1
+            if not picks.get(name):
+                parts.append("  （未选择列）")
+                parts.append("")
             parts.append("")
-            valid += 1
 
         if valid == 0:
             messagebox.showwarning(
                 "没有有效数据",
-                "所选工作簿的 %s 列都没有解析到任何时长，请检查文档内容。"
-                % pick_col)
+                "所选工作簿的列都没有解析到任何时长，请检查文档内容。")
             return
 
         messagebox.showinfo("统计结果", "\n".join(parts))
-        self.var_status.set("已统计 %d 个工作簿的 %s 列" % (valid, pick_col))
+        self.var_status.set("已统计 %d 个工作簿" % valid)
 
     def _choose_sheets(self, sheets_info):
         """弹出工作簿多选框，可勾选多个工作簿。
@@ -533,14 +540,14 @@ class App:
         top.wait_window()
         return result.get("names")
 
-    def _choose_column(self, usable_cols):
-        """弹出列选择框，只列出有数据的列（统一固定选一列）。
+    def _choose_columns(self, sheet_name, usable_cols):
+        """弹出列选择框，可多选，只列出该工作表有数据的列。
 
         usable_cols: [col, ...] 有数据的列名列表。
-        返回选中的列名，或 None（取消）。
+        返回选中的列名列表，或 None（取消）。
         """
         if not usable_cols:
-            return None
+            return []
         top = tk.Toplevel(self.root)
         top.title("选择统计列")
         top.transient(self.root)
@@ -548,22 +555,28 @@ class App:
         top.resizable(False, False)
 
         tk.Label(top,
-                 text="请选择要统计的列（将统计所有选中工作簿的该列）：",
+                 text="工作簿「%s」可统计以下列（可多选）：" % sheet_name,
                  font=("Microsoft YaHei", 9)).pack(padx=12, pady=(12, 4))
 
-        frame = tk.Frame(top)
-        frame.pack(padx=12, pady=4)
-        labels = ["列 %s" % col for col in usable_cols]
-
-        var = tk.StringVar(value=labels[0])
-        om = tk.OptionMenu(frame, var, *labels)
-        om.config(width=24)
-        om.pack()
+        box = tk.Frame(top)
+        box.pack(padx=12, pady=4)
+        vars_map = {}
+        for col in usable_cols:
+            var = tk.BooleanVar(value=True)
+            vars_map[col] = var
+            cb = tk.Checkbutton(box, text="列 %s" % col,
+                                font=("Microsoft YaHei", 9), variable=var,
+                                anchor="w")
+            cb.pack(fill=tk.X, padx=8, pady=2)
 
         result = {}
 
         def ok():
-            result["col"] = usable_cols[labels.index(var.get())]
+            picked = [c for c, v in vars_map.items() if v.get()]
+            if not picked:
+                messagebox.showinfo("提示", "请至少勾选一个列。")
+                return
+            result["cols"] = picked
             top.destroy()
 
         def cancel():
@@ -576,7 +589,7 @@ class App:
 
         self._center(top)
         top.wait_window()
-        return result.get("col")
+        return result.get("cols")
 
     def _disable_buttons(self, disabled):
         for w in self.root.winfo_children():
@@ -591,25 +604,26 @@ class App:
             return
         self._remember(path)
 
-        # 读取每个工作表的数据（本地文件暂读 A 列）
+        # 读取每个工作表的所有列数据
         sheets_info = []
-        all_cols = set()
         for sheet in sheets:
             try:
-                values = reader.read_column_a(handle, kind, sheet)
+                columns = reader.read_all_columns(handle, kind, sheet)
             except Exception as e:
                 continue
-            total, parsed, _ = calc.total_from_values(values)
-            columns = {}
             usable_cols = []
-            if parsed > 0:
-                usable_cols.append("A")
-                all_cols.add("A")
-                columns["A"] = [str(v[0]) for v in values
-                                if v[0] is not None and str(v[0]).strip() != ""]
+            text_columns = {}
+            for letter in sorted(columns):
+                vals = [str(v[0]) for v in columns[letter]
+                        if v[0] is not None and str(v[0]).strip() != ""]
+                total, parsed, _ = calc.total_from_values(
+                    [(c, False) for c in vals])
+                if parsed > 0:
+                    usable_cols.append(letter)
+                    text_columns[letter] = vals
             sheets_info.append({
                 "name": sheet,
-                "columns": columns,
+                "columns": text_columns,
                 "usable_cols": usable_cols,
             })
 
@@ -618,52 +632,71 @@ class App:
         if not selectable:
             messagebox.showwarning(
                 "没有有效数据",
-                "所有工作表 A 列都没有解析到任何时长，请检查表格内容。")
+                "所有工作表都没有解析到任何时长，请检查表格内容。")
             return
         picked_sheets = self._choose_sheets(selectable)
         if picked_sheets is None:
             self.var_status.set("已取消")
             return
 
-        # 统一选列（本地文件目前仅 A 列）
-        pick_col = self._choose_column(sorted(all_cols))
-        if pick_col is None:
-            self.var_status.set("已取消")
-            return
+        # 每个选中的工作表独立选列（可多选）
+        picks = {}
+        for name in picked_sheets:
+            info = next(s for s in sheets_info if s["name"] == name)
+            if not info["usable_cols"]:
+                picks[name] = []
+                continue
+            cols = self._choose_columns(name, info["usable_cols"])
+            if cols is None:
+                self.var_status.set("已取消")
+                return
+            picks[name] = cols
 
-        # 分工作表统计
+        # 分工作表、分列统计
         parts = ["文件：%s" % os.path.basename(path), ""]
         valid = 0
         notes = []
         for name in picked_sheets:
             info = next(s for s in sheets_info if s["name"] == name)
-            vals = info["columns"].get(pick_col, [])
-            total, parsed, skipped = calc.total_from_values(
-                [(c, False) for c in vals])
-            parts.append("──── %s（%s 列）────" % (name, pick_col))
-            if parsed == 0:
-                parts.append("  该工作表的 %s 列没有时长数据" % pick_col)
+            parts.append("──── %s ────" % name)
+            for col in picks.get(name, []):
+                vals = info["columns"].get(col, [])
+                total, parsed, skipped = calc.total_from_values(
+                    [(c, False) for c in vals])
+                if parsed == 0:
+                    parts.append("  %s 列：没有时长数据" % col)
+                    continue
+                parts.append("  %s 列：" % col)
+                for line in calc.build_result_lines(total, parsed, skipped):
+                    parts.append("    " + line)
                 parts.append("")
-                continue
-            for line in calc.build_result_lines(total, parsed, skipped):
-                parts.append("  " + line)
+                valid += 1
+            if not picks.get(name):
+                parts.append("  （未选择列）")
+                parts.append("")
             parts.append("")
-            valid += 1
 
+            # 写回合计（每个选中列写回）
             if kind in ("xlsx", "csv"):
-                try:
-                    ok = reader.write_total(handle, kind, name,
-                                            calc.build_total_text(total), path)
-                    if ok:
-                        notes.append("合计已写入工作表「%s」" % name)
-                except Exception as e:
-                    notes.append("工作表 %s 写回失败：%s" % (name, e))
+                for col in picks.get(name, []):
+                    vals = info["columns"].get(col, [])
+                    total, parsed, skipped = calc.total_from_values(
+                        [(c, False) for c in vals])
+                    if parsed == 0:
+                        continue
+                    try:
+                        ok = reader.write_total(handle, kind, name,
+                                                calc.build_total_text(total),
+                                                path)
+                        if ok:
+                            notes.append("合计已写入工作表「%s」" % name)
+                    except Exception as e:
+                        notes.append("工作表 %s 写回失败：%s" % (name, e))
 
         if valid == 0:
             messagebox.showwarning(
                 "没有有效数据",
-                "所选工作表的 %s 列都没有解析到任何时长，请检查表格内容。"
-                % pick_col)
+                "所选工作表的列都没有解析到任何时长，请检查表格内容。")
             return
 
         if kind == "xls":
@@ -673,7 +706,7 @@ class App:
             parts.extend("  " + n for n in notes)
 
         messagebox.showinfo("统计结果", "\n".join(parts))
-        self.var_status.set("已处理：%s（%d 个工作表）" %
+        self.var_status.set("已处理：%s（%d 个列）" %
                             (os.path.basename(path), valid))
 
     def _remember(self, path):

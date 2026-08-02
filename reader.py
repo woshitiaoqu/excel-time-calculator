@@ -65,42 +65,57 @@ def _is_time_cell(value, fmt):
     return ("h" in f) or ("[m]" in f) or ("[s]" in f)
 
 
-def read_column_a(handle, kind, sheet_name):
+def read_all_columns(handle, kind, sheet_name):
+    """读取工作表的所有列，返回 {"A": [...], "B": [...], ...}。
+
+    只返回有非空值的列，每列是按行排列的单元格值列表。
+    """
     if kind == "xlsx":
         ws = handle[sheet_name]
-        out = []
-        for r in range(1, ws.max_row + 1):
-            c = ws.cell(r, 1)
-            v = c.value
-            if v is None:
-                continue
-            if isinstance(v, str) and not v.strip():
-                continue
-            out.append((v, _is_time_cell(v, c.number_format)))
-        return out
+        cols = {}
+        for c in range(1, ws.max_column + 1):
+            letter = get_column_letter(c)
+            vals = []
+            for r in range(1, ws.max_row + 1):
+                cell = ws.cell(r, c)
+                v = cell.value
+                if v is None:
+                    continue
+                if isinstance(v, str) and not v.strip():
+                    continue
+                vals.append((v, _is_time_cell(v, cell.number_format)))
+            if vals:
+                cols[letter] = vals
+        return cols
 
     if kind == "xls":
         import xlrd
         sh = handle.sheet_by_name(sheet_name)
-        out = []
-        for r in range(sh.nrows):
-            c = sh.cell(r, 0)
-            v = c.value
-            if v is None or v == "":
-                continue
-            out.append((v, c.ctype == xlrd.XL_CELL_DATE))
-        return out
+        cols = {}
+        for c in range(sh.ncols):
+            letter = get_column_letter(c + 1)
+            vals = []
+            for r in range(sh.nrows):
+                cell = sh.cell(r, c)
+                v = cell.value
+                if v is None or v == "":
+                    continue
+                vals.append((v, cell.ctype == xlrd.XL_CELL_DATE))
+            if vals:
+                cols[letter] = vals
+        return cols
 
-    rows = handle.rows
-    out = []
-    for row in rows:
-        if not row or not row[0]:
-            continue
-        v = row[0].strip()
-        if not v:
-            continue
-        out.append((v, False))
-    return out
+    # csv：只有一列
+    return {"A": read_column_a(handle, kind, sheet_name)}
+
+
+def get_column_letter(n):
+    """1 -> A, 2 -> B, ... 27 -> AA"""
+    letter = ""
+    while n:
+        n, rem = divmod(n - 1, 26)
+        letter = chr(65 + rem) + letter
+    return letter
 
 
 _FULLWIDTH = {ord("："): ":", ord("．"): ".", ord("，"): ",", ord("　"): " "}
