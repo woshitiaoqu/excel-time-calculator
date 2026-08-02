@@ -32,6 +32,7 @@ class LineNumberText(tk.Frame):
 
     def __init__(self, parent, **kw):
         tk.Frame.__init__(self, parent)
+        self.skipped_rows = set()
         self.ln = tk.Canvas(self, width=42, highlightthickness=0,
                             bd=0, bg="#f2f2f2")
         self.vsb = tk.Scrollbar(self, orient=tk.VERTICAL,
@@ -41,11 +42,15 @@ class LineNumberText(tk.Frame):
         self.text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.vsb.pack(side=tk.RIGHT, fill=tk.Y)
 
-        self.text.bind("<KeyRelease>", lambda e: self._redraw())
+        self.text.bind("<KeyRelease>", self._on_key)
         self.text.bind("<Configure>", lambda e: self._redraw())
         self.text.bind("<<Modified>>", self._on_modified)
         self.text.bind("<MouseWheel>", self._wheel)
         self.ln.bind("<MouseWheel>", self._wheel)
+        self._redraw()
+
+    def _on_key(self, event):
+        self.clear_skipped()
         self._redraw()
 
     def _wheel(self, event):
@@ -75,9 +80,19 @@ class LineNumberText(tk.Frame):
                 break
             y = dline[1]
             n = int(str(i).split(".")[0])
+            fill = "#c00" if n in self.skipped_rows else "#999"
             self.ln.create_text(36, y, anchor="ne", text=n,
-                                font=self.text.cget("font"), fill="#999")
+                                font=self.text.cget("font"), fill=fill)
             i = self.text.index("%s+1line" % i)
+
+    def set_skipped(self, rows):
+        self.skipped_rows = set(rows)
+        self._redraw()
+
+    def clear_skipped(self):
+        if self.skipped_rows:
+            self.skipped_rows = set()
+            self._redraw()
 
 
 class App:
@@ -119,6 +134,7 @@ class App:
                              wrap=tk.WORD, relief=tk.GROOVE, bd=1)
         inp.pack(fill=tk.BOTH, expand=True, padx=16)
         self.txt_input = inp.text
+        self.txt_input_ln = inp
 
         tk.Button(self.root, text="统计粘贴的时长", width=18,
                   command=self.process_text).pack(pady=8)
@@ -143,12 +159,20 @@ class App:
             self.process_file(p)
 
     def process_text(self):
-        text = self.txt_input.get("1.0", tk.END).strip()
-        if not text:
+        text = self.txt_input.get("1.0", tk.END)
+        if not text.strip():
             messagebox.showinfo("提示", "请先粘贴时长数据。")
             return
-        values = [(line, False) for line in text.splitlines()
-                  if line.strip()]
+        lines = text.splitlines()
+        values = []
+        skipped_rows = []
+        for idx, line in enumerate(lines, 1):
+            if not line.strip():
+                continue
+            values.append((line, False))
+            if calc.parse_seconds(line, False) is None:
+                skipped_rows.append(idx)
+        self.txt_input_ln.set_skipped(skipped_rows)
         total, parsed, skipped = calc.total_from_values(values)
         if parsed == 0:
             messagebox.showwarning(
