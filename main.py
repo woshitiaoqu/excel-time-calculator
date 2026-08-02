@@ -9,6 +9,7 @@ from tkinter import filedialog, messagebox
 
 import calc
 import reader
+import tencent
 
 try:
     from tkinterdnd2 import TkinterDnD, DND_FILES
@@ -100,8 +101,8 @@ class App:
     def __init__(self, root):
         self.root = root
         self.root.title("Excel视频时长统计工具（Beta版）")
-        self.root.geometry("480x540")
-        self.root.resizable(False, False)
+        self.root.geometry("480x640")
+        self.root.minsize(440, 600)
 
         if HAS_DND:
             self.root.drop_target_register(DND_FILES)
@@ -128,6 +129,20 @@ class App:
 
         self.imported = []
         self.import_labels = {}
+
+        tk.Label(self.root,
+                 text="── 或粘贴在线文档链接（腾讯文档 / WPS，一行一个）──",
+                 font=("Microsoft YaHei", 9), fg="#999").pack(pady=(10, 4))
+
+        self.txt_url = tk.Entry(self.root, font=("Consolas", 10))
+        self.txt_url.pack(fill=tk.X, padx=16)
+
+        tk.Button(self.root, text="获取在线文档数据", width=18,
+                  command=self.process_url).pack(pady=4)
+
+        self.lb_loading = tk.Label(self.root, text="", fg="#1a73e8",
+                                   font=("Microsoft YaHei", 9))
+        self._loading_job = None
 
         tk.Label(self.root,
                  text="── 或直接粘贴时长数据（每行一条，如 3:40 / 90）──",
@@ -186,6 +201,173 @@ class App:
         msg = "\n".join(calc.build_result_lines(total, parsed, skipped))
         messagebox.showinfo("统计结果", msg)
         self.var_status.set("已统计 %d 条粘贴数据" % parsed)
+
+    def process_url(self):
+        text = self.txt_url.get().strip()
+        if not text:
+            messagebox.showinfo("提示", "请先粘贴在线文档链接。")
+            return
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        for link in lines:
+            self.process_online(link)
+
+    def _start_loading(self, text):
+        self.lb_loading.config(text=text)
+        self._loading_job = self.root.after(50, lambda: self._animate_dots(text))
+
+    def _animate_dots(self, base):
+        dots = "." * (((self._loading_dots % 3) + 1))
+        self.lb_loading.config(text=base + dots)
+        self._loading_dots += 1
+        self._loading_job = self.root.after(400, lambda: self._animate_dots(base))
+
+    def _stop_loading(self):
+        if self._loading_job:
+            self.root.after_cancel(self._loading_job)
+            self._loading_job = None
+        self.lb_loading.config(text="")
+
+    def process_online(self, url):
+        self._loading_dots = 0
+        self._start_loading("正在获取数据中")
+        self.var_status.set("正在获取在线文档，请稍候…")
+        self._disable_buttons(True)
+
+        def worker():
+            result = None
+            err = None
+            try:
+                result = tencent.fetch_workbook_with_browser(
+                    url, progress=self._on_progress)
+            except Exception as e:
+                err = str(e)
+            self.root.after(0, lambda: self._online_done(url, result, err))
+
+        import threading
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+
+    def _on_progress(self, msg):
+        self._stop_loading()
+        self._loading_dots = 0
+        self._start_loading("「%s」" % msg)
+
+    def _online_done(self, url, result, err):
+        self._stop_loading()
+        self._disable_buttons(False)
+        if err:
+            messagebox.showerror("获取失败", err)
+            self.var_status.set("获取失败")
+            return
+        if not result:
+            messagebox.showerror("获取失败", "没有获取到任何数据，请检查链接。")
+            self.var_status.set("获取失败")
+            return
+
+        parts = ["在线文档：%s" % url, ""]
+        valid = 0
+        for wb in result:
+            name = wb["name"]
+            columns = wb.get("columns", {})
+            # 智能检测有数据的列（排除解析不出时长的列）
+            usable = []
+            for col in sorted(columns):
+                vals = columns[col]
+                total, parsed, _ = calc.total_from_values(
+                    [(c, False) for c in vals])
+                if parsed > 0:
+                    usable.append((col, vals, total, parsed))
+            if not usable:
+                parts.append("──── %s ────" % name)
+                parts.append("  没有解析到任何时长")
+                parts.append("")
+                continue
+
+            if len(usable) == 1:
+                col, vals, total, parsed = usable[0]
+                parts.append("──── %s ────" % name)
+                for line in calc.build_result_lines(total, parsed,
+                                                     len(vals) - parsed):
+                    parts.append("  " + line)
+                parts.append("")
+                valid += 1
+            else:
+                # 多列有数据：弹出选择框，智能列出有数据的列
+                pick = self._choose_column(name, usable)
+                if pick is None:
+                    parts.append("──── %s ────" % name)
+                    parts.append("  已取消选择列")
+                    parts.append("")
+                    continue
+                col, vals, total, parsed = pick
+                parts.append("──── %s（%s 列）────" % (name, col))
+                for line in calc.build_result_lines(total, parsed,
+                                                     len(vals) - parsed):
+                    parts.append("  " + line)
+                parts.append("")
+                valid += 1
+
+        if valid == 0:
+            messagebox.showwarning(
+                "没有有效数据",
+                "所有工作簿都没有解析到任何时长，请检查文档内容。")
+            return
+
+        messagebox.showinfo("统计结果", "\n".join(parts))
+        self.var_status.set("已统计在线文档全部工作簿")
+
+    def _choose_column(self, sheet_name, usable):
+        """智能弹出列选择框，只列出有数据的列。
+
+        usable: [(col, vals, total, parsed), ...]
+        返回选中的 (col, vals, total, parsed) 或 None（取消）。
+        """
+        top = tk.Toplevel(self.root)
+        top.title("选择统计列")
+        top.transient(self.root)
+        top.grab_set()
+        top.resizable(False, False)
+
+        tk.Label(top,
+                 text="工作簿「%s」有多个列含时长数据，请选择要统计的列："
+                      % sheet_name,
+                 font=("Microsoft YaHei", 9)).pack(padx=12, pady=(12, 4))
+
+        frame = tk.Frame(top)
+        frame.pack(padx=12, pady=4)
+        labels = []
+        for col, vals, total, parsed in usable:
+            labels.append("列 %s（%d 条时长）" % (col, parsed))
+
+        var = tk.StringVar(value=labels[0])
+        om = tk.OptionMenu(frame, var, *labels)
+        om.config(width=24)
+        om.pack()
+
+        result = {}
+
+        def ok():
+            result["idx"] = labels.index(var.get())
+            top.destroy()
+
+        def cancel():
+            top.destroy()
+
+        btn = tk.Frame(top)
+        btn.pack(pady=8)
+        tk.Button(btn, text="确定", width=8, command=ok).pack(side=tk.LEFT, padx=6)
+        tk.Button(btn, text="取消", width=8, command=cancel).pack(side=tk.LEFT, padx=6)
+
+        self._center(top)
+        top.wait_window()
+        if "idx" not in result:
+            return None
+        return usable[result["idx"]]
+
+    def _disable_buttons(self, disabled):
+        for w in self.root.winfo_children():
+            if isinstance(w, tk.Button):
+                w.config(state=tk.DISABLED if disabled else tk.NORMAL)
 
     def process_file(self, path):
         try:

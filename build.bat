@@ -25,7 +25,8 @@ if exist "dist\*.exe" del /q "dist\*.exe"
 if exist "build" rmdir /s /q "build"
 
 echo [4/4] 打包中（需 1-3 分钟）...
-pyinstaller --noconfirm --onefile --noconsole --name ExcelTimeCalculator --collect-all tkinterdnd2 main.py
+rem --collect-all selenium 打包 selenium-manager：运行时自动检测浏览器版本并匹配驱动
+pyinstaller --noconfirm --onefile --noconsole --name ExcelTimeCalculator --collect-all tkinterdnd2 --collect-all selenium main.py
 
 echo.
 echo 打包完成！exe 位置：dist\ExcelTimeCalculator.exe
