@@ -49,7 +49,25 @@ class LineNumberText(tk.Frame):
         self.text.bind("<MouseWheel>", self._wheel)
         self.ln.bind("<MouseWheel>", self._wheel)
         self.vsb.bind("<MouseWheel>", self._wheel)
+        self.text.bind("<<Paste>>", self._on_paste)
         self._redraw()
+
+    def _on_paste(self, event):
+        """像记事本一样：粘贴只保留文本，忽略图片/文件等非文本内容。"""
+        try:
+            text = self.text.clipboard_get()
+        except tk.TclError:
+            return "break"  # 剪贴板无文本（如图片），忽略
+        if text is None:
+            return "break"
+        # 只插入文本，图片等内容自然被忽略
+        try:
+            self.text.insert(tk.INSERT, text)
+        except Exception:
+            pass
+        self.clear_skipped()
+        self._redraw()
+        return "break"
 
     def _on_key(self, event):
         self.clear_skipped()
@@ -181,6 +199,13 @@ class App:
         if not text.strip():
             messagebox.showinfo("提示", "请先粘贴时长数据。")
             return
+
+        # 智能识别多列（tab 或连续空格分隔）
+        cols = self._split_columns(text)
+        if len(cols) > 1:
+            self._stat_multi_columns(cols)
+            return
+
         lines = text.splitlines()
         values = []
         skipped_rows = []
@@ -202,14 +227,139 @@ class App:
         messagebox.showinfo("统计结果", msg)
         self.var_status.set("已统计 %d 条粘贴数据" % parsed)
 
+    def _split_columns(self, text):
+        """把粘贴文本拆分成多列数据。
+
+        返回 [ [值, ...], ... ]（每列一个列表），若只有单列返回单元素列表。
+        用 tab 或两个以上空格作为列分隔符。
+        """
+        rows = [line for line in text.splitlines() if line.strip()]
+        if not rows:
+            return []
+        # 判断是否多列：任一行的分隔符数 >= 1
+        is_multi = any(re.search(r"\t|  +", line) for line in rows)
+        if not is_multi:
+            return [rows]
+        cols = []
+        for line in rows:
+            cells = re.split(r"\t|  +", line.strip())
+            for i, c in enumerate(cells):
+                while len(cols) <= i:
+                    cols.append([])
+                cols[i].append(c)
+        return [c for c in cols if c]
+
+    def _stat_multi_columns(self, cols):
+        """分列统计粘贴的多列数据，弹框选择要统计的列。"""
+        usable = []
+        for i, vals in enumerate(cols):
+            total, parsed, _ = calc.total_from_values(
+                [(c, False) for c in vals])
+            if parsed > 0:
+                usable.append((i, vals, parsed))
+        if not usable:
+            messagebox.showwarning(
+                "没有有效数据",
+                "没有解析到任何时长，请检查输入内容。")
+            return
+
+        if len(usable) == 1:
+            # 单列有数据，直接统计
+            i, vals, parsed = usable[0]
+            total, parsed, skipped = calc.total_from_values(
+                [(c, False) for c in vals])
+            msg = "\n".join(calc.build_result_lines(total, parsed, skipped))
+            messagebox.showinfo("统计结果", msg)
+            self.var_status.set("已统计 %d 条粘贴数据" % parsed)
+            return
+
+        # 多列有数据：弹框选列
+        labels = []
+        for i, vals, parsed in usable:
+            labels.append("列 %s（%d 条时长）" % (chr(65 + i), parsed))
+        pick = self._choose_text_column(labels)
+        if pick is None:
+            self.var_status.set("已取消")
+            return
+        i, vals, parsed = usable[pick]
+        total, parsed, skipped = calc.total_from_values(
+            [(c, False) for c in vals])
+        lines = calc.build_result_lines(total, parsed, skipped)
+        msg = "列 %s：\n%s" % (chr(65 + i), "\n".join(lines))
+        messagebox.showinfo("统计结果", msg)
+        self.var_status.set("已统计 %d 条粘贴数据" % parsed)
+
+    def _choose_text_column(self, labels):
+        """弹出选择框，从多个列中选一个。返回索引或 None。"""
+        top = tk.Toplevel(self.root)
+        top.title("选择统计列")
+        top.transient(self.root)
+        top.grab_set()
+        top.resizable(False, False)
+
+        tk.Label(top,
+                 text="粘贴的数据有多列，请选择要统计的列：",
+                 font=("Microsoft YaHei", 9)).pack(padx=12, pady=(12, 4))
+
+        var = tk.StringVar(value=labels[0])
+        om = tk.OptionMenu(top, var, *labels)
+        om.config(width=24)
+        om.pack(padx=12, pady=4)
+
+        result = {}
+
+        def ok():
+            result["idx"] = labels.index(var.get())
+            top.destroy()
+
+        def cancel():
+            top.destroy()
+
+        btn = tk.Frame(top)
+        btn.pack(pady=8)
+        tk.Button(btn, text="确定", width=8, command=ok).pack(side=tk.LEFT, padx=6)
+        tk.Button(btn, text="取消", width=8, command=cancel).pack(side=tk.LEFT, padx=6)
+
+        self._center(top)
+        top.wait_window()
+        return result.get("idx")
+
     def process_url(self):
         text = self.txt_url.get().strip()
         if not text:
             messagebox.showinfo("提示", "请先粘贴在线文档链接。")
             return
-        lines = [l.strip() for l in text.splitlines() if l.strip()]
-        for link in lines:
+        # 从文本中提取链接（忽略文件名、说明文字等）
+        links = self._extract_links(text)
+        if not links:
+            messagebox.showwarning(
+                "未找到链接",
+                "没有识别到在线文档链接。\n"
+                "请粘贴包含 docs.qq.com 或 kdocs.cn / pan.wps.cn 的链接。")
+            return
+        for link in links:
             self.process_online(link)
+
+    def _extract_links(self, text):
+        """从任意文本中提取在线文档链接，自动去重保序。"""
+        # 匹配 http(s) 链接，截取到空白/中括号/中文等结束符
+        found = []
+        for m in re.finditer(
+                r"https?://[^\s\u4e00-\u9fff\u3000【】\[\]（）()\"'，。；：、]+",
+                text):
+            url = m.group(0).rstrip(".,;!?）)")
+            # 只保留支持的在线文档链接
+            if re.search(r"(docs\.qq\.com|kdocs\.cn|pan\.wps\.cn|wps\.cn)",
+                         url):
+                found.append(url)
+        # 去重保序
+        seen = set()
+        out = []
+        for u in found:
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+        return out
 
     def _start_loading(self, text):
         self.lb_loading.config(text=text)
