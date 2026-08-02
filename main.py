@@ -224,7 +224,7 @@ class App:
                 "支持格式：3:40 / 3:00 / 90（秒）")
             return
         msg = "\n".join(calc.build_result_lines(total, parsed, skipped))
-        messagebox.showinfo("统计结果", msg)
+        self._show_result(msg)
         self.var_status.set("已统计 %d 条粘贴数据" % parsed)
 
     def _split_columns(self, text):
@@ -269,7 +269,7 @@ class App:
             total, parsed, skipped = calc.total_from_values(
                 [(c, False) for c in vals])
             msg = "\n".join(calc.build_result_lines(total, parsed, skipped))
-            messagebox.showinfo("统计结果", msg)
+            self._show_result(msg)
             self.var_status.set("已统计 %d 条粘贴数据" % parsed)
             return
 
@@ -286,7 +286,7 @@ class App:
             [(c, False) for c in vals])
         lines = calc.build_result_lines(total, parsed, skipped)
         msg = "列 %s：\n%s" % (chr(65 + i), "\n".join(lines))
-        messagebox.showinfo("统计结果", msg)
+        self._show_result(msg)
         self.var_status.set("已统计 %d 条粘贴数据" % parsed)
 
     def _choose_text_column(self, labels):
@@ -486,7 +486,7 @@ class App:
                 "所选工作簿的列都没有解析到任何时长，请检查文档内容。")
             return
 
-        messagebox.showinfo("统计结果", "\n".join(parts))
+        self._show_result("\n".join(parts))
         self.var_status.set("已统计 %d 个工作簿" % valid)
 
     def _choose_sheets(self, sheets_info):
@@ -705,7 +705,7 @@ class App:
             parts.append("── 写回情况 ──")
             parts.extend("  " + n for n in notes)
 
-        messagebox.showinfo("统计结果", "\n".join(parts))
+        self._show_result("\n".join(parts))
         self.var_status.set("已处理：%s（%d 个列）" %
                             (os.path.basename(path), valid))
 
@@ -762,6 +762,41 @@ class App:
         x = self.root.winfo_rootx() + 60
         y = self.root.winfo_rooty() + 60
         win.geometry("+%d+%d" % (x, y))
+
+    def _show_result(self, msg):
+        """统计结果窗口：模仿系统弹窗外观，固定大小，内容多时可滚动。"""
+        top = tk.Toplevel(self.root)
+        top.title("统计结果")
+        top.transient(self.root)
+        top.geometry("480x420")
+        top.minsize(360, 260)
+        top.configure(bg="#f0f0f0")
+
+        # 文本区：白底、默认字体，接近系统弹窗正文
+        frame = tk.Frame(top, bg="#ffffff")
+        frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        txt = tk.Text(frame, wrap=tk.WORD, bd=0, bg="#ffffff",
+                      font=("TkDefaultFont", 10),
+                      padx=10, pady=10, relief=tk.FLAT, cursor="arrow")
+        vsb = tk.Scrollbar(frame, orient=tk.VERTICAL, command=txt.yview)
+        txt.configure(yscrollcommand=vsb.set)
+        txt.bind("<MouseWheel>",
+                 lambda e: txt.yview_scroll(int(-e.delta / 120), "units"))
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        txt.insert("1.0", msg)
+        txt.configure(state=tk.DISABLED)
+
+        # 确定按钮：居中，风格接近系统弹窗按钮
+        btn = tk.Button(top, text="确定", width=8,
+                        font=("TkDefaultFont", 9), command=top.destroy,
+                        padx=8, pady=1)
+        btn.pack(pady=(0, 10))
+
+        self._center(top)
+        top.wait_window()
 
     def on_close(self):
         self.root.destroy()
