@@ -47,6 +47,7 @@ class LineNumberText(tk.Frame):
         self.text.bind("<<Modified>>", self._on_modified)
         self.text.bind("<MouseWheel>", self._wheel)
         self.ln.bind("<MouseWheel>", self._wheel)
+        self.vsb.bind("<MouseWheel>", self._wheel)
         self._redraw()
 
     def _on_key(self, event):
