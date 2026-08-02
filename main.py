@@ -83,7 +83,7 @@ class LineNumberText(tk.Frame):
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("Excel 视频时长统计工具")
+        self.root.title("Excel视频时长统计工具（Beta版）")
         self.root.geometry("480x540")
         self.root.resizable(False, False)
 

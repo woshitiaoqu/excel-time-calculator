@@ -21,8 +21,13 @@ def parse_seconds(value, time_cell):
     return _p(value, time_cell)
 
 
+import math
+
+
 def _fmt_hours(hours):
-    s = "%.2f" % hours
+    # 截断两位小数，不进位（如 1.0344 -> 1.03，1.999 -> 1.99）
+    v = math.floor(hours * 100) / 100
+    s = "%.2f" % v
     s = s.rstrip("0").rstrip(".")
     return s if s else "0"
 
@@ -36,7 +41,7 @@ def build_result_lines(total, parsed, skipped):
     lines = [
         "共统计：%d 行（跳过 %d 行）" % (parsed, skipped),
         "总小时：%sh" % _fmt_hours(hours),
-        "总分钟：%d 分钟" % round(minutes),
+        "总分钟：%d 分钟" % int(minutes),
         "总秒数：%d 秒" % total,
         "",
         "即 %d 小时 %d 分 %d 秒" % (h, m, sec),
