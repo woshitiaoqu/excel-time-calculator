@@ -591,45 +591,90 @@ class App:
             return
         self._remember(path)
 
-        if kind in ("xlsx", "xls") and len(sheets) > 1:
-            sheet = self.choose_sheet(sheets)
-            if sheet is None:
-                self.var_status.set("已取消")
-                return
-        else:
-            sheet = sheets[0]
-
-        try:
-            values = reader.read_column_a(handle, kind, sheet)
-            total, parsed, skipped = calc.total_from_values(values)
-        except Exception as e:
-            messagebox.showerror("计算失败", str(e))
-            return
-
-        if parsed == 0:
-            messagebox.showwarning("没有有效数据",
-                                   "A 列没有解析到任何时长，请检查表格内容。")
-            return
-
-        lines = calc.build_result_lines(total, parsed, skipped)
-        msg = "\n".join(lines)
-
-        note = ""
-        if kind in ("xlsx", "csv"):
+        # 读取每个工作表的数据（本地文件暂读 A 列）
+        sheets_info = []
+        all_cols = set()
+        for sheet in sheets:
             try:
-                ok = reader.write_total(handle, kind, sheet,
-                                        calc.build_total_text(total), path)
-                if ok:
-                    note = "\n\n合计已写入：%s" % os.path.basename(path)
-                else:
-                    note = "\n\n（该格式暂不支持写回合计）"
+                values = reader.read_column_a(handle, kind, sheet)
             except Exception as e:
-                note = "\n\n写回失败：%s" % e
-        else:
-            note = "\n\n（.xls 文件暂不支持写回合计，仅显示结果）"
+                continue
+            total, parsed, _ = calc.total_from_values(values)
+            columns = {}
+            usable_cols = []
+            if parsed > 0:
+                usable_cols.append("A")
+                all_cols.add("A")
+                columns["A"] = [str(v[0]) for v in values
+                                if v[0] is not None and str(v[0]).strip() != ""]
+            sheets_info.append({
+                "name": sheet,
+                "columns": columns,
+                "usable_cols": usable_cols,
+            })
 
-        messagebox.showinfo("统计结果", msg + note)
-        self.var_status.set("已处理：%s" % os.path.basename(path))
+        # 弹工作簿多选框
+        selectable = [s for s in sheets_info if s["usable_cols"]]
+        if not selectable:
+            messagebox.showwarning(
+                "没有有效数据",
+                "所有工作表 A 列都没有解析到任何时长，请检查表格内容。")
+            return
+        picked_sheets = self._choose_sheets(selectable)
+        if picked_sheets is None:
+            self.var_status.set("已取消")
+            return
+
+        # 统一选列（本地文件目前仅 A 列）
+        pick_col = self._choose_column(sorted(all_cols))
+        if pick_col is None:
+            self.var_status.set("已取消")
+            return
+
+        # 分工作表统计
+        parts = ["文件：%s" % os.path.basename(path), ""]
+        valid = 0
+        notes = []
+        for name in picked_sheets:
+            info = next(s for s in sheets_info if s["name"] == name)
+            vals = info["columns"].get(pick_col, [])
+            total, parsed, skipped = calc.total_from_values(
+                [(c, False) for c in vals])
+            parts.append("──── %s（%s 列）────" % (name, pick_col))
+            if parsed == 0:
+                parts.append("  该工作表的 %s 列没有时长数据" % pick_col)
+                parts.append("")
+                continue
+            for line in calc.build_result_lines(total, parsed, skipped):
+                parts.append("  " + line)
+            parts.append("")
+            valid += 1
+
+            if kind in ("xlsx", "csv"):
+                try:
+                    ok = reader.write_total(handle, kind, name,
+                                            calc.build_total_text(total), path)
+                    if ok:
+                        notes.append("合计已写入工作表「%s」" % name)
+                except Exception as e:
+                    notes.append("工作表 %s 写回失败：%s" % (name, e))
+
+        if valid == 0:
+            messagebox.showwarning(
+                "没有有效数据",
+                "所选工作表的 %s 列都没有解析到任何时长，请检查表格内容。"
+                % pick_col)
+            return
+
+        if kind == "xls":
+            notes.append("（.xls 文件暂不支持写回合计，仅显示结果）")
+        if notes:
+            parts.append("── 写回情况 ──")
+            parts.extend("  " + n for n in notes)
+
+        messagebox.showinfo("统计结果", "\n".join(parts))
+        self.var_status.set("已处理：%s（%d 个工作表）" %
+                            (os.path.basename(path), valid))
 
     def _remember(self, path):
         if path in self.imported:
@@ -678,43 +723,6 @@ class App:
             os.startfile(path)
         except Exception as e:
             messagebox.showerror("打开失败", str(e))
-
-    def choose_sheet(self, sheets):
-        top = tk.Toplevel(self.root)
-        top.title("选择工作表")
-        top.transient(self.root)
-        top.grab_set()
-        top.resizable(False, False)
-
-        tk.Label(top, text="该文件有多个工作表，请选择要统计的那一个：",
-                 font=("Microsoft YaHei", 9)).pack(padx=12, pady=(12, 4))
-
-        lb = tk.Listbox(top, width=40, height=min(8, len(sheets)),
-                        font=("Microsoft YaHei", 10))
-        for s in sheets:
-            lb.insert(tk.END, s)
-        lb.selection_set(0)
-        lb.pack(padx=12, pady=4)
-
-        result = {}
-
-        def ok():
-            sel = lb.curselection()
-            if sel:
-                result["name"] = sheets[sel[0]]
-            top.destroy()
-
-        def cancel():
-            top.destroy()
-
-        frame = tk.Frame(top)
-        frame.pack(pady=8)
-        tk.Button(frame, text="确定", width=8, command=ok).pack(side=tk.LEFT, padx=6)
-        tk.Button(frame, text="取消", width=8, command=cancel).pack(side=tk.LEFT, padx=6)
-
-        self._center(top)
-        top.wait_window()
-        return result.get("name")
 
     def _center(self, win):
         win.update_idletasks()
