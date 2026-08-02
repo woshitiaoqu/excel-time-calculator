@@ -204,12 +204,19 @@ def write_total(handle, kind, sheet_name, text, path):
     if kind == "xlsx":
         from openpyxl.styles import Font
         ws = handle[sheet_name]
+        # 找已有的"总计"行（覆盖），否则追加到最后一个非空行下面
+        total_row = None
         last = 0
         for r in range(1, ws.max_row + 1):
             v = ws.cell(r, 1).value
             if v is not None and str(v).strip() != "":
                 last = r
-        cell = ws.cell(last + 1, 1)
+                if isinstance(v, str) and v.strip().startswith("总计"):
+                    total_row = r
+        if total_row is not None:
+            cell = ws.cell(total_row, 1)
+        else:
+            cell = ws.cell(last + 1, 1)
         cell.value = text
         cell.font = Font(bold=True)
         handle.save(path)
@@ -217,7 +224,15 @@ def write_total(handle, kind, sheet_name, text, path):
 
     if kind == "csv":
         rows = handle.rows
-        rows.append([text])
+        # 覆盖已有的总计行，否则追加
+        replaced = False
+        for i in range(len(rows) - 1, -1, -1):
+            if rows[i] and rows[i][0].strip().startswith("总计"):
+                rows[i] = [text]
+                replaced = True
+                break
+        if not replaced:
+            rows.append([text])
         with open(path, "w", encoding=handle.encoding, newline="") as f:
             csv.writer(f).writerows(rows)
         return True

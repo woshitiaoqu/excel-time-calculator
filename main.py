@@ -676,20 +676,24 @@ class App:
                 parts.append("")
             parts.append("")
 
-            # 写回合计（每个选中列写回）
+            # 写回合计（每个工作表只写一次，多列时汇总）
             if kind in ("xlsx", "csv"):
+                grand_total = 0
                 for col in picks.get(name, []):
                     vals = info["columns"].get(col, [])
                     total, parsed, skipped = calc.total_from_values(
                         [(c, False) for c in vals])
-                    if parsed == 0:
-                        continue
+                    grand_total += total
+                if grand_total > 0:
                     try:
                         ok = reader.write_total(handle, kind, name,
-                                                calc.build_total_text(total),
+                                                calc.build_total_text(grand_total),
                                                 path)
                         if ok:
                             notes.append("合计已写入工作表「%s」" % name)
+                    except PermissionError:
+                        notes.append("工作表 %s 写回失败：文件被占用，"
+                                     "请先关闭 Excel/WPS 再重新统计。" % name)
                     except Exception as e:
                         notes.append("工作表 %s 写回失败：%s" % (name, e))
 
